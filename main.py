@@ -79,13 +79,14 @@ def processar_notificacao_bruta(dados: NotificacaoBruta, db: Session = Depends(g
 
     # O DETETIVE DA INTELIGÊNCIA ARTIFICIAL (Extrai nomes e locais)
     favorecido = ""
-    match_nome = re.search(r'\b(?:em|para|de)\s+([a-z0-9\s]+)(?:,|\.|$)', texto_sem_acento)
+    # Regex melhorado: Ignora artigos ("a", "o") depois das preposições
+    match_nome = re.search(r'\b(?:em|para|de)\s+(?:o\s+|a\s+)?([a-z0-9\s]+?)(?:,|\.|$|-|no valor)', texto_sem_acento)
     if match_nome:
         pedacos = match_nome.group(1).strip().split()
-        if len(pedacos) > 0:
+        if len(pedacos) > 0 and pedacos[0] != "r":
             favorecido = " ".join(pedacos[:2]).title()
             
-    palavras_limpar = ['um', 'uma', 'o', 'a', 'reais', 'real', 'transferencia', 'pix']
+    palavras_limpar = ['um', 'uma', 'reais', 'real', 'transferencia', 'pix', 'voce', 'conta', 'sucesso', 'concluido']
     if favorecido.lower() in palavras_limpar:
         favorecido = ""
 
@@ -112,10 +113,18 @@ def processar_notificacao_bruta(dados: NotificacaoBruta, db: Session = Depends(g
     elif "uber" in dados.app_origem.lower() or "99" in dados.app_origem.lower() or "indrive" in dados.app_origem.lower():
         tipo, descricao, salvar = "ganho", f"Mobilidade", True
         
-    elif "pix" in texto_sem_acento and ("recebeu" in texto_sem_acento or "transferencia" in texto_sem_acento or "concluid" in texto_sem_acento or "sucesso" in texto_sem_acento):
-        descricao = f"Pix: {favorecido}" if favorecido else "Receita Pix"
-        tipo, salvar = "ganho", True
-        
+    # --- A NOVA LÓGICA DO PIX (Inteligente) ---
+    elif "pix" in texto_sem_acento or "transferencia" in texto_sem_acento:
+        # Se disser explicitamente que "recebeu", é lucro
+        if "recebeu" in texto_sem_acento or "recebido" in texto_sem_acento or "entrou" in texto_sem_acento:
+            descricao = f"Pix Recebido: {favorecido}" if favorecido else "Receita Pix"
+            tipo, salvar = "ganho", True
+        # Qualquer outro Pix (enviado, pago, ou notificação genérica de "concluído") é considerado despesa
+        else:
+            descricao = f"Pix Enviado: {favorecido}" if favorecido else "Pix Enviado"
+            tipo, salvar = "despesa", True
+    # ------------------------------------------
+
     elif "posto" in texto_sem_acento or "combust" in texto_sem_acento or "gasolina" in texto_sem_acento:
         tipo, descricao, salvar = "despesa", "Abastecimento", True
         
