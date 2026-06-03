@@ -1,26 +1,40 @@
 import re
+import unicodedata
+import os
 from fastapi import FastAPI, Depends, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime
 from sqlalchemy import func
+
 import models
 from database import engine, get_db
 
+# Garante que as tabelas são criadas no banco de dados
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="PsyNet Command")
 
+# Configuração OBRIGATÓRIA de Segurança (CORS)
+# Permite que o seu aplicativo no telemóvel consiga aceder a esta API na nuvem
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 class NotificacaoApp(BaseModel):
-    tipo: str; valor: float; descricao: str
+    tipo: str
+    valor: float
+    descricao: str
 
 class NotificacaoBruta(BaseModel):
-    app_origem: str; titulo: str; texto_notificacao: str
+    app_origem: str
+    titulo: str
+    texto_notificacao: str
 
 @app.post("/api/lancamentos")
 def registrar_lancamento(dados: NotificacaoApp, db: Session = Depends(get_db)):
@@ -45,13 +59,16 @@ def pegar_historico(db: Session = Depends(get_db)):
 
 @app.post("/api/captura_bruta")
 def processar_notificacao_bruta(dados: NotificacaoBruta, db: Session = Depends(get_db)):
-    print(f"\n📡 [INTERCEÇÃO] {dados.app_origem}: {dados.texto_notificacao}")
+    print(f"\n📡 [INTERCEÇÃO] {dados.app_origem}: {dados.titulo} | {dados.texto_notificacao}")
     texto_completo = f"{dados.titulo} {dados.texto_notificacao}".lower()
+    
+    # Truque de Engenharia: Remover todos os acentos para a IA não se confundir
+    texto_sem_acento = ''.join(c for c in unicodedata.normalize('NFD', texto_completo) if unicodedata.category(c) != 'Mn')
     
     valor = 0.0
     contexto_voz = ""
     
-    # 1. Caçador Universal de Dinheiro (Acha "R$ 30" ou "30 reais")
+    # 1. Caçador Universal de Dinheiro (Acha "R$ 30", "30 reais", "30,50")
     match = re.search(r'(?:r\$\s*)?(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)\s*(?:reais|real)?', texto_completo)
     
     if not match:
@@ -61,7 +78,7 @@ def processar_notificacao_bruta(dados: NotificacaoBruta, db: Session = Depends(g
     valor_str = match.group(1).replace('.', '').replace(',', '.')
     valor = float(valor_str)
     
-    # 2. O Cérebro do J.A.R.V.I.S (Limpeza de texto)
+    # 2. O Cérebro do J.A.R.V.I.S (Limpeza de texto do microfone)
     if dados.app_origem == "JARVIS":
         contexto = texto_completo
         # Retira os comandos e o dinheiro da frase para isolar o motivo
@@ -73,11 +90,11 @@ def processar_notificacao_bruta(dados: NotificacaoBruta, db: Session = Depends(g
         contexto = re.sub(r'^\s*(com|de|da|do|em|por|na|no|para)\s+', '', contexto.strip())
         contexto_voz = contexto.strip().capitalize()
 
-    tipo, descricao, salvar = "despesa", "Gasto", False
+    tipo, descricao, salvar = "despesa", "Gasto Detetado", False
 
-    # 3. Regras de Negócio e Categorização
+    # 3. Regras de Negócio e Categorização (usando o texto SEM acentos para maior precisão)
     if dados.app_origem == "JARVIS":
-        if "gastei" in texto_completo or "paguei" in texto_completo or "comprei" in texto_completo:
+        if "gastei" in texto_sem_acento or "paguei" in texto_sem_acento or "comprei" in texto_sem_acento:
             descricao = f"Gasto: {contexto_voz}" if contexto_voz else "Gasto Manual"
             tipo, salvar = "despesa", True
         else:
@@ -87,13 +104,13 @@ def processar_notificacao_bruta(dados: NotificacaoBruta, db: Session = Depends(g
     elif "uber" in dados.app_origem.lower() or "99" in dados.app_origem.lower() or "indrive" in dados.app_origem.lower():
         tipo, descricao, salvar = "ganho", f"Mobilidade", True
         
-    elif "pix" in texto_completo and ("recebeu" in texto_completo or "transferência" in texto_completo or "concluido" in texto_completo):
+    elif "pix" in texto_sem_acento and ("recebeu" in texto_sem_acento or "transferencia" in texto_sem_acento or "concluid" in texto_sem_acento or "sucesso" in texto_sem_acento):
         tipo, descricao, salvar = "ganho", f"Receita PsyNet", True
         
-    elif "posto" in texto_completo or "combust" in texto_completo or "gasolina" in texto_completo:
+    elif "posto" in texto_sem_acento or "combust" in texto_sem_acento or "gasolina" in texto_sem_acento:
         tipo, descricao, salvar = "despesa", "Abastecimento", True
         
-    elif "compra" in texto_completo or "débito" in texto_completo:
+    elif "compra" in texto_sem_acento or "debito" in texto_sem_acento:
         tipo, descricao, salvar = "despesa", "Gasto Cartão", True
 
     if salvar:
@@ -109,7 +126,6 @@ def pegar_resumo_contabil(meta_mensal: float = Query(8000.0), db: Session = Depe
     total_ganhos = db.query(func.sum(models.Lancamento.valor)).filter(models.Lancamento.tipo == "ganho").scalar() or 0.0
     total_gastos = db.query(func.sum(models.Lancamento.valor)).filter(models.Lancamento.tipo == "despesa").scalar() or 0.0
     
-    # A CORREÇÃO: O Python volta a separar os dinheiros para o gráfico!
     faturamento_mobilidade = db.query(func.sum(models.Lancamento.valor)).filter(
         models.Lancamento.tipo == "ganho", models.Lancamento.descricao.like("%Mobilidade%")
     ).scalar() or 0.0
@@ -135,9 +151,6 @@ def pegar_resumo_contabil(meta_mensal: float = Query(8000.0), db: Session = Depe
     
     return {
         "fluxo": {"total_bruto": total_ganhos, "lucro_real": lucro_real, "gastos": total_gastos, "fundo": fundo, "depreciacao": depreciacao},
-        
-        # O BLOCO QUE FALTAVA:
         "fontes": {"mobilidade": faturamento_mobilidade, "psynet_ti": receita_psynet, "dinheiro_especie": receita_manual}, 
-        
         "estrategia": {"meta_semanal": meta_mensal / 4.33, "projecao_mensal": projecao_mensal, "meta_diaria_ajustada": (falta_para_meta / dias_restantes) if falta_para_meta > 0 else 0.0}
     }
