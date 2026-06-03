@@ -1,11 +1,11 @@
 import re
 import unicodedata
 import os
+from datetime import datetime, timedelta
 from fastapi import FastAPI, Depends, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from datetime import datetime
 from sqlalchemy import func
 
 import models
@@ -17,7 +17,6 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI(title="PsyNet Command")
 
 # Configuração OBRIGATÓRIA de Segurança (CORS)
-# Permite que o seu aplicativo no telemóvel consiga aceder a esta API na nuvem
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -62,38 +61,46 @@ def processar_notificacao_bruta(dados: NotificacaoBruta, db: Session = Depends(g
     print(f"\n📡 [INTERCEÇÃO] {dados.app_origem}: {dados.titulo} | {dados.texto_notificacao}")
     texto_completo = f"{dados.titulo} {dados.texto_notificacao}".lower()
     
-    # Truque de Engenharia: Remover todos os acentos para a IA não se confundir
+    # Remover todos os acentos para a IA não se confundir
     texto_sem_acento = ''.join(c for c in unicodedata.normalize('NFD', texto_completo) if unicodedata.category(c) != 'Mn')
     
     valor = 0.0
     contexto_voz = ""
     
-    # 1. Caçador Universal de Dinheiro (Acha "R$ 30", "30 reais", "30,50")
+    # Caçador Universal de Dinheiro
     match = re.search(r'(?:r\$\s*)?(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)\s*(?:reais|real)?', texto_completo)
-    
     if not match:
-        print("❌ [IGNORADO] Sem valor financeiro detetado.")
         return {"status": "ignorado"}
 
     valor_str = match.group(1).replace('.', '').replace(',', '.')
     valor = float(valor_str)
     
-    # 2. O Cérebro do J.A.R.V.I.S (Limpeza de texto do microfone)
+    tipo, descricao, salvar = "despesa", "Gasto Detetado", False
+
+    # O DETETIVE DA INTELIGÊNCIA ARTIFICIAL (Extrai nomes e locais)
+    favorecido = ""
+    match_nome = re.search(r'\b(?:em|para|de)\s+([a-z0-9\s]+)(?:,|\.|$)', texto_sem_acento)
+    if match_nome:
+        pedacos = match_nome.group(1).strip().split()
+        if len(pedacos) > 0:
+            favorecido = " ".join(pedacos[:2]).title()
+            
+    palavras_limpar = ['um', 'uma', 'o', 'a', 'reais', 'real', 'transferencia', 'pix']
+    if favorecido.lower() in palavras_limpar:
+        favorecido = ""
+
+    if not favorecido and len(dados.titulo) < 20 and "R$" not in dados.titulo:
+        favorecido = dados.titulo.title()
+
+    # Processamento JARVIS (Voz)
     if dados.app_origem == "JARVIS":
         contexto = texto_completo
-        # Retira os comandos e o dinheiro da frase para isolar o motivo
         palavras_remover = ["gastei", "recebi", "ganhei", "paguei", "comprei", "r$", "reais", "real", match.group(1), match.group(0)]
         for p in palavras_remover:
             contexto = contexto.replace(p, "")
-        
-        # Apaga preposições perdidas no início (ex: " da pizza" -> "pizza")
         contexto = re.sub(r'^\s*(com|de|da|do|em|por|na|no|para)\s+', '', contexto.strip())
         contexto_voz = contexto.strip().capitalize()
-
-    tipo, descricao, salvar = "despesa", "Gasto Detetado", False
-
-    # 3. Regras de Negócio e Categorização (usando o texto SEM acentos para maior precisão)
-    if dados.app_origem == "JARVIS":
+        
         if "gastei" in texto_sem_acento or "paguei" in texto_sem_acento or "comprei" in texto_sem_acento:
             descricao = f"Gasto: {contexto_voz}" if contexto_voz else "Gasto Manual"
             tipo, salvar = "despesa", True
@@ -101,19 +108,34 @@ def processar_notificacao_bruta(dados: NotificacaoBruta, db: Session = Depends(g
             descricao = f"Receita: {contexto_voz}" if contexto_voz else "Receita Manual"
             tipo, salvar = "ganho", True
             
+    # Processamento de Aplicativos
     elif "uber" in dados.app_origem.lower() or "99" in dados.app_origem.lower() or "indrive" in dados.app_origem.lower():
         tipo, descricao, salvar = "ganho", f"Mobilidade", True
         
     elif "pix" in texto_sem_acento and ("recebeu" in texto_sem_acento or "transferencia" in texto_sem_acento or "concluid" in texto_sem_acento or "sucesso" in texto_sem_acento):
-        tipo, descricao, salvar = "ganho", f"Receita PsyNet", True
+        descricao = f"Pix: {favorecido}" if favorecido else "Receita Pix"
+        tipo, salvar = "ganho", True
         
     elif "posto" in texto_sem_acento or "combust" in texto_sem_acento or "gasolina" in texto_sem_acento:
         tipo, descricao, salvar = "despesa", "Abastecimento", True
         
-    elif "compra" in texto_sem_acento or "debito" in texto_sem_acento:
-        tipo, descricao, salvar = "despesa", "Gasto Cartão", True
+    elif "compra" in texto_sem_acento or "debito" in texto_sem_acento or "pagamento" in texto_sem_acento:
+        descricao = f"Gasto: {favorecido}" if favorecido else "Gasto Cartão"
+        tipo, salvar = "despesa", True
 
     if salvar:
+        # A BARREIRA FINAL DE SEGURANÇA (Evita duplicação nos últimos 3 minutos)
+        limite_tempo = datetime.now() - timedelta(minutes=3)
+        duplicata = db.query(models.Lancamento).filter(
+            models.Lancamento.valor == valor,
+            models.Lancamento.tipo == tipo,
+            models.Lancamento.data_hora >= limite_tempo
+        ).first()
+        
+        if duplicata:
+            print(f"⚠️ [DUPLICATA BLOQUEADA] {descricao} - R$ {valor:.2f}")
+            return {"status": "ignorado", "motivo": "duplicata_recente"}
+
         db.add(models.Lancamento(tipo=tipo, valor=valor, descricao=descricao, data_hora=datetime.now()))
         db.commit()
         print(f"✅ [CONTABILIZADO] {descricao} | R$ {valor:.2f}")
