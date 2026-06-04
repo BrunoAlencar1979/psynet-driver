@@ -1,12 +1,16 @@
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
 
-# A URL virá de uma variável de ambiente (vamos configurar isso no Render)
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+# Pega a URL do banco das variáveis de ambiente do Render (Segurança máxima!)
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-engine = create_engine("postgresql://neondb_owner:npg_nTfWscgFY5x4@ep-blue-poetry-acwknpga-pooler.sa-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+# Proteção: Se a variável não for encontrada, o servidor avisa no log
+if not DATABASE_URL:
+    raise ValueError("A variável de ambiente DATABASE_URL não está configurada no servidor!")
+
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
