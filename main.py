@@ -37,7 +37,10 @@ class NotificacaoBruta(BaseModel):
 
 @app.post("/api/lancamentos")
 def registrar_lancamento(dados: NotificacaoApp, db: Session = Depends(get_db)):
-    novo = models.Lancamento(tipo=dados.tipo, valor=dados.valor, descricao=dados.descricao, data_hora=datetime.now())
+    # Ajuste de Fuso Horário (UTC -3)
+    hora_brasilia = datetime.utcnow() - timedelta(hours=3)
+    
+    novo = models.Lancamento(tipo=dados.tipo, valor=dados.valor, descricao=dados.descricao, data_hora=hora_brasilia)
     db.add(novo)
     db.commit()
     return {"status": "sucesso"}
@@ -133,8 +136,11 @@ def processar_notificacao_bruta(dados: NotificacaoBruta, db: Session = Depends(g
         tipo, salvar = "despesa", True
 
     if salvar:
-        # A BARREIRA FINAL DE SEGURANÇA (Evita duplicação nos últimos 3 minutos)
-        limite_tempo = datetime.now() - timedelta(minutes=3)
+        # Ajuste de Fuso Horário (UTC -3) para o momento do registo
+        hora_brasilia = datetime.utcnow() - timedelta(hours=3)
+        
+        # A BARREIRA FINAL DE SEGURANÇA (Evita duplicação nos últimos 3 minutos baseando-se na hora local)
+        limite_tempo = hora_brasilia - timedelta(minutes=3)
         duplicata = db.query(models.Lancamento).filter(
             models.Lancamento.valor == valor,
             models.Lancamento.tipo == tipo,
@@ -145,7 +151,7 @@ def processar_notificacao_bruta(dados: NotificacaoBruta, db: Session = Depends(g
             print(f"⚠️ [DUPLICATA BLOQUEADA] {descricao} - R$ {valor:.2f}")
             return {"status": "ignorado", "motivo": "duplicata_recente"}
 
-        db.add(models.Lancamento(tipo=tipo, valor=valor, descricao=descricao, data_hora=datetime.now()))
+        db.add(models.Lancamento(tipo=tipo, valor=valor, descricao=descricao, data_hora=hora_brasilia))
         db.commit()
         print(f"✅ [CONTABILIZADO] {descricao} | R$ {valor:.2f}")
         return {"status": "sucesso", "categorizado_como": descricao, "valor": valor}
