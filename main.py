@@ -148,12 +148,8 @@ def pegar_resumo_contabil(meta_mensal: float = Query(8000.0), user_id: str = Hea
     total_ganhos = soma_por_filtro(models.Lancamento.tipo == "ganho")
     total_gastos = soma_por_filtro(models.Lancamento.tipo == "despesa")
     
-    # 1. CATEGORIAS UNIVERSAIS
     faturamento_mobilidade = soma_por_filtro(models.Lancamento.tipo == "ganho", models.Lancamento.descricao.like("%Mobilidade%"))
-    
-    # Substituímos o PsyNet por uma busca universal de Pix
     receita_pix = soma_por_filtro(models.Lancamento.tipo == "ganho", models.Lancamento.descricao.like("%Pix%"))
-    
     receita_manual = soma_por_filtro(models.Lancamento.tipo == "ganho", models.Lancamento.descricao.like("%Manual%"))
 
     fundo = total_ganhos * 0.05
@@ -168,10 +164,21 @@ def pegar_resumo_contabil(meta_mensal: float = Query(8000.0), user_id: str = Hea
     falta_para_meta = meta_mensal - total_ganhos
     
     return {
-        "fluxo": {"total_bruto": total_ganhos, "lucro_real": lucro_real, "gastos": total_gastos, "fundo": fundo, "depreciacao": depreciacao},
-        # 2. ENVIAMOS A NOVA VARIÁVEL
-        "fontes": {"mobilidade": faturamento_mobilidade, "transferencias_pix": receita_pix, "dinheiro_especie": receita_manual}, 
-        "estrategia": {"meta_semanal": meta_mensal / 4.33, "projecao_mensal": projecao_mensal, "meta_diaria_ajustada": (falta_para_meta / dias_restantes) if falta_para_meta > 0 else 0.0}
-    }
-        "estrategia": {"meta_semanal": meta_mensal / 4.33, "projecao_mensal": projecao_mensal, "meta_diaria_ajustada": (falta_para_meta / dias_restantes) if falta_para_meta > 0 else 0.0}
+        "fluxo": {
+            "total_bruto": total_ganhos, 
+            "lucro_real": lucro_real, 
+            "gastos": total_gastos, 
+            "fundo": fundo, 
+            "depreciacao": depreciacao
+        },
+        "fontes": {
+            "mobilidade": faturamento_mobilidade, 
+            "transferencias_pix": receita_pix, 
+            "dinheiro_especie": receita_manual
+        }, 
+        "estrategia": {
+            "meta_semanal": meta_mensal / 4.33, 
+            "projecao_mensal": projecao_mensal, 
+            "meta_diaria_ajustada": (falta_para_meta / dias_restantes) if falta_para_meta > 0 else 0.0
+        }
     }
